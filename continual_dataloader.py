@@ -18,10 +18,20 @@ import torch
 from torch.utils.data.dataset import Subset
 from torchvision import datasets, transforms
 from torchvision.transforms.transforms import Lambda
-from continuum.datasets import Core50
+from continuum.datasets import Core50, DomainNet
 from continuum import InstanceIncremental
+import warnings
+from timm.data import create_transform
+from timm.data.constants import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 
 import utils
+from torchvision.transforms import functional as Fv
+
+try:
+    interpolation = Fv.InterpolationMode.BICUBIC
+except:
+    interpolation = 3
+
 
 
 class ContinualDataLoader:
@@ -124,28 +134,74 @@ class ContinualDataLoader:
         return dataloader, class_mask
 
 
-def build_transform(is_train, args):
-    resize_im = args.input_size > 32
-    if is_train:
-        scale = (0.08, 1.0)
-        ratio = (3. / 4., 4. / 3.)
-        transform = transforms.Compose([
-            transforms.RandomResizedCrop(args.input_size, scale=scale, ratio=ratio),
-            transforms.RandomHorizontalFlip(p=0.5),
-            transforms.ToTensor(),
-        ])
-        return transform
+# def build_transform(is_train, args):
+#     resize_im = args.input_size > 32
+#     if is_train:
+#         scale = (0.08, 1.0)
+#         ratio = (3. / 4., 4. / 3.)
+#         transform = transforms.Compose([
+#             transforms.RandomResizedCrop(args.input_size, scale=scale, ratio=ratio),
+#             transforms.RandomHorizontalFlip(p=0.5),
+#             transforms.ToTensor(),
+#         ])
+#         return transform
+#
+#     t = []
+#     if resize_im:
+#         size = int((256 / 224) * args.input_size)
+#         t.append(
+#             transforms.Resize(size, interpolation=3),  # to maintain same ratio w.r.t. 224 images
+#         )
+#         t.append(transforms.CenterCrop(args.input_size))
+#     t.append(transforms.ToTensor())
+#
+#     return transforms.Compose(t)
 
-    t = []
-    if resize_im:
-        size = int((256 / 224) * args.input_size)
-        t.append(
-            transforms.Resize(size, interpolation=3),  # to maintain same ratio w.r.t. 224 images
-        )
-        t.append(transforms.CenterCrop(args.input_size))
-    t.append(transforms.ToTensor())
-    
-    return transforms.Compose(t)
+
+def build_transform(is_train, args):
+    if args.aa == 'none':
+        args.aa = None
+
+    with warnings.catch_warnings():
+        resize_im = args.input_size > 32
+        if is_train:
+            # this should always dispatch to transforms_imagenet_train
+            transform = create_transform(
+                input_size=args.input_size,
+                is_training=True,
+                color_jitter=args.color_jitter,
+                auto_augment=args.aa,
+                interpolation='bicubic',
+                re_prob=args.reprob,
+                re_mode=args.remode,
+                re_count=args.recount,
+            )
+            if not resize_im:
+                # replace RandomResizedCropAndInterpolation with
+                # RandomCrop
+                transform.transforms[0] = transforms.RandomCrop(
+                    args.input_size, padding=4)
+
+            if args.input_size == 32 and args.data_set == 'CIFAR':
+                transform.transforms[-1] = transforms.Normalize((0.5071, 0.4867, 0.4408), (0.2675, 0.2565, 0.2761))
+            return transform
+
+        t = []
+        if resize_im:
+            size = int((256 / 224) * args.input_size)
+            t.append(
+                transforms.Resize(size, interpolation=interpolation),  # to maintain same ratio w.r.t. 224 images
+            )
+            t.append(transforms.CenterCrop(args.input_size))
+
+        t.append(transforms.ToTensor())
+        if args.input_size == 32 and args.data_set == 'CIFAR':
+            # Normalization values for CIFAR100
+            t.append(transforms.Normalize((0.5071, 0.4867, 0.4408), (0.2675, 0.2565, 0.2761)))
+        else:
+            t.append(transforms.Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD))
+
+        return transforms.Compose(t)
 
 
 def build_dataset(is_train, args):
@@ -162,6 +218,8 @@ def build_dataset(is_train, args):
     #     dataset = ImageNet1000(args.data_path, train=is_train)
     if args.dataset.lower() == 'core50':
         dataset = Core50(args.data_path, scenario='domains', classification='object', train=is_train)
+    elif args.dataset.lower() == 'domainnet':
+        dataset = DomainNet(args.data_path, train=is_train)
     else:
         raise ValueError(f'Unknown dataset {args.data_set}.')
 
