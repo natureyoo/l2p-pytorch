@@ -21,7 +21,7 @@ from timm.models import create_model
 from timm.scheduler import create_scheduler
 from timm.optim import create_optimizer
 
-from continual_dataloader import ContinualDataLoader
+from continual_dataloader import ContinualDataLoader, build_dataset
 from engine import *
 import models
 import utils
@@ -30,7 +30,7 @@ import warnings
 warnings.filterwarnings('ignore', 'Argument interpolation should be of type InterpolationMode instead of int')
 
 def get_args_parser():
-    parser = argparse.ArgumentParser('L2P CIFAR-100 training and evaluation configs', add_help=False)
+    parser = argparse.ArgumentParser('L2P training and evaluation configs', add_help=False)
 
     parser.add_argument('--batch-size', default=16, type=int, help='Batch size per device')
     parser.add_argument('--epochs', default=5, type=int)
@@ -81,7 +81,7 @@ def get_args_parser():
     parser.add_argument('--recount', type=int, default=1, help='Random erase count (default: 1)')
 
     # Data parameters
-    parser.add_argument('--data-path', default='/local_datasets/', type=str, help='dataset path')
+    parser.add_argument('--data-path', default='/home/jayeon/Data/', type=str, help='dataset path')
     parser.add_argument('--dataset', default='CIFAR100', type=str, help='dataset name')
     parser.add_argument('--shuffle', default=True, help='shuffle the data order')
     parser.add_argument('--output_dir', default='./output', help='path where to save, empty for no saving')
@@ -145,8 +145,12 @@ def main(args):
 
     cudnn.benchmark = True
 
-    continual_dataloader = ContinualDataLoader(args)
-    data_loader, class_mask = continual_dataloader.create_dataloader()
+    if args.dataset == 'CIFAR100':
+        continual_dataloader = ContinualDataLoader(args)
+        data_loader, class_mask = continual_dataloader.create_dataloader()
+    else:
+        scenario_train, args.nb_classes = build_dataset(is_train=True, args=args)
+        scenario_val, _ = build_dataset(is_train=False, args=args)
 
     print(f"Creating original model: {args.model}")
     original_model = create_model(
@@ -197,6 +201,7 @@ def main(args):
         acc_matrix = np.zeros((args.num_tasks, args.num_tasks))
 
         for task_id in range(args.num_tasks):
+        # for task_id in [7]:
             checkpoint_path = os.path.join(args.output_dir, 'checkpoint/task{}_checkpoint.pth'.format(task_id+1))
             if os.path.exists(checkpoint_path):
                 print('Loading checkpoint from:', checkpoint_path)
@@ -205,8 +210,12 @@ def main(args):
             else:
                 print('No checkpoint found at:', checkpoint_path)
                 return
-            _ = evaluate_till_now(model, original_model, data_loader, device, 
-                                            task_id, class_mask, acc_matrix, args,)
+            if args.dataset == 'CIFAR100':
+                _ = evaluate_till_now(model, original_model, data_loader, device,
+                                                task_id, class_mask, acc_matrix, args,)
+            else:
+                _ = evaluate_till_now_continuum(model, original_model, scenario_val, device, task_id, class_mask=None,
+                                                acc_matrix=acc_matrix, args=args, )
         
         return
 
@@ -237,9 +246,14 @@ def main(args):
     print(f"Start training for {args.epochs} epochs")
     start_time = time.time()
 
-    train_and_evaluate(model, model_without_ddp, original_model,
-                    criterion, data_loader, optimizer, lr_scheduler,
-                    device, class_mask, args)
+    if args.dataset == 'CIFAR100':
+        train_and_evaluate(model, model_without_ddp, original_model,
+                        criterion, data_loader, optimizer, lr_scheduler,
+                        device, class_mask, args)
+    else:
+        train_and_evaluate_continuum(model, model_without_ddp, original_model,
+                        criterion, scenario_train, scenario_val, optimizer, lr_scheduler,
+                        device, args=args)
 
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
