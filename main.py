@@ -88,6 +88,7 @@ def get_args_parser():
     parser.add_argument('--device', default='cuda', help='device to use for training / testing')
     parser.add_argument('--seed', default=42, type=int)
     parser.add_argument('--eval', action='store_true', help='Perform evaluation only')
+    parser.add_argument('--analysis', action='store_true', help='Perform evaluation only')
     parser.add_argument('--num_workers', default=4, type=int)
     parser.add_argument('--pin-mem', action='store_true',
                         help='Pin CPU memory in DataLoader for more efficient (sometimes) transfer to GPU.')
@@ -217,6 +218,22 @@ def main(args):
                 _ = evaluate_till_now_continuum(model, original_model, scenario_val, device, task_id, class_mask=None,
                                                 acc_matrix=acc_matrix, args=args, )
         
+        return
+
+    if args.analysis:
+        task_id = 7
+        checkpoint_path = os.path.join(args.output_dir, 'checkpoint/task{}_checkpoint.pth'.format(task_id + 1))
+        if os.path.exists(checkpoint_path):
+            print('Loading checkpoint from:', checkpoint_path)
+            checkpoint = torch.load(checkpoint_path)
+            model.load_state_dict(checkpoint['model'])
+        else:
+            print('No checkpoint found at:', checkpoint_path)
+            return
+        prompt_stat = analyze(model, original_model, scenario_train, device, args=args,)
+        np.savetxt(os.path.join(args.output_dir, 'prompt_stat_by_class.txt'), prompt_stat['class'], delimiter=',')
+        np.savetxt(os.path.join(args.output_dir, 'prompt_stat_by_task.txt'), prompt_stat['task'], delimiter=',')
+        print(prompt_stat)
         return
 
     model_without_ddp = model

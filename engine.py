@@ -358,3 +358,39 @@ def train_and_evaluate_continuum(model: torch.nn.Module, model_without_ddp: torc
                                    '{}_stats.txt'.format(datetime.datetime.now().strftime('log_%Y_%m_%d_%H_%M'))),
                       'a') as f:
                 f.write(json.dumps(log_stats) + '\n')
+
+
+@torch.no_grad()
+def analyze(model: torch.nn.Module, original_model: torch.nn.Module, scenario,
+             device, task_id=-1, class_mask=None, args=None, ):
+
+    metric_logger = utils.MetricLogger(delimiter="  ")
+
+    # switch to evaluation mode
+    model.eval()
+    original_model.eval()
+
+    p_stat = {'class': np.zeros((args.nb_classes, args.size)), 'task': np.zeros((args.num_tasks, args.size))}
+
+    with torch.no_grad():
+        for task_id, dataset in enumerate(scenario):
+            data_loader = get_train_loaders(dataset, args)
+            header = 'Test: [Task {}]'.format(task_id + 1)
+            for input, target, _ in metric_logger.log_every(data_loader, args.print_freq, header):
+                input = input.to(device, non_blocking=True)
+                target = target.to(device, non_blocking=True)
+
+                # compute output
+
+                if original_model is not None:
+                    output = original_model(input)
+                    cls_features = output['pre_logits']
+                else:
+                    cls_features = None
+
+                output = model(input, task_id=task_id, cls_features=cls_features, return_prompt=True)
+                for i in range(target.shape[0]):
+                    p_stat['task'][task_id][output['idx'][i].cpu()] += 1
+                    p_stat['class'][target[i]][output['idx'][i].cpu()] += 1
+            print(p_stat)
+    return p_stat

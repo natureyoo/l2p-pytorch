@@ -44,7 +44,7 @@ class Prompt(nn.Module):
         x_inv_norm = torch.rsqrt(torch.maximum(square_sum, torch.tensor(epsilon, device=x.device)))
         return x * x_inv_norm
     
-    def forward(self, x_embed, prompt_mask=None, cls_features=None):
+    def forward(self, x_embed, prompt_mask=None, cls_features=None, return_prompt=False):
         out = dict()
         if self.prompt_pool:
             if self.embedding_key == 'mean':
@@ -67,7 +67,11 @@ class Prompt(nn.Module):
             similarity = torch.matmul(x_embed_norm, prompt_norm.t()) # B, Pool_size
             
             if prompt_mask is None:
-                _, idx = torch.topk(similarity, k=self.top_k, dim=1) # B, top_k
+                sim, idx = torch.topk(similarity, k=self.top_k, dim=1) # B, top_k
+                if return_prompt:
+                    out['sim'] = sim
+                    out['idx'] = idx
+                    return out
                 if self.batchwise_prompt:
                     prompt_id, id_counts = torch.unique(idx, return_counts=True, sorted=True)
                     # In jnp.unique, when the 'size' is specified and there are fewer than the indicated number of elements,

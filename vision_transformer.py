@@ -454,7 +454,7 @@ class VisionTransformer(nn.Module):
             self.global_pool = global_pool
         self.head = nn.Linear(self.embed_dim, num_classes) if num_classes > 0 else nn.Identity()
 
-    def forward_features(self, x, task_id=-1, cls_features=None, train=False):
+    def forward_features(self, x, task_id=-1, cls_features=None, train=False, return_prompt=False):
         x = self.patch_embed(x)
 
         if hasattr(self, 'prompt'):
@@ -467,7 +467,9 @@ class VisionTransformer(nn.Module):
                     prompt_mask = None
             else:
                 prompt_mask = None
-            res = self.prompt(x, prompt_mask=prompt_mask, cls_features=cls_features)
+            res = self.prompt(x, prompt_mask=prompt_mask, cls_features=cls_features, return_prompt=return_prompt)
+            if return_prompt:
+                return res
             self.total_prompt_len = res['total_prompt_len']
             x = res['prompted_embedding']
         else:
@@ -510,7 +512,10 @@ class VisionTransformer(nn.Module):
         
         return res
 
-    def forward(self, x, task_id=-1, cls_features=None, train=False):
+    def forward(self, x, task_id=-1, cls_features=None, train=False, return_prompt=False):
+        if return_prompt:
+            res = self.forward_features(x, task_id=task_id, cls_features=cls_features, train=train, return_prompt=True)
+            return res
         res = self.forward_features(x, task_id=task_id, cls_features=cls_features, train=train)
         res = self.forward_head(res)
         return res
