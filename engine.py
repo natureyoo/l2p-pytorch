@@ -178,6 +178,7 @@ def evaluate_continuum(model: torch.nn.Module, original_model: torch.nn.Module, 
                 logits_mask = logits_mask.index_fill(1, mask, 0.0)
                 logits = logits + logits_mask
 
+            target = target.type(torch.LongTensor).to(device)
             loss = criterion(logits, target)
 
             acc1, acc5 = accuracy(logits, target, topk=(1, 5))
@@ -244,7 +245,6 @@ def evaluate_till_now_continuum(model: torch.nn.Module, original_model: torch.nn
 
     # avg_stat = np.divide(np.sum(stat_matrix, axis=1), task_id + 1)
     avg_stat = np.divide(np.sum(stat_matrix, axis=1), len(scenario_val))
-
     diagonal = np.diag(acc_matrix)
 
     result_str = "[Average accuracy till task{}]\tAcc@1: {:.4f}\tAcc@5: {:.4f}\tLoss: {:.4f}".format(task_id + 1,
@@ -259,7 +259,7 @@ def evaluate_till_now_continuum(model: torch.nn.Module, original_model: torch.nn
         result_str += "\tForgetting: {:.4f}\tBackward: {:.4f}".format(forgetting, backward)
     print(result_str)
 
-    return test_stats
+    return test_stats, stat_matrix
 
 
 def train_and_evaluate(model: torch.nn.Module, model_without_ddp: torch.nn.Module, original_model: torch.nn.Module, 
@@ -331,7 +331,7 @@ def train_and_evaluate_continuum(model: torch.nn.Module, model_without_ddp: torc
             if lr_scheduler:
                 lr_scheduler.step(epoch)
 
-        test_stats = evaluate_till_now_continuum(model=model, original_model=original_model, scenario_val=scenario_val,
+        test_stats, stat_matrix = evaluate_till_now_continuum(model=model, original_model=original_model, scenario_val=scenario_val,
                                                  device=device, task_id=task_id, class_mask=class_mask,
                                                  acc_matrix=acc_matrix, args=args)
         if args.output_dir and utils.is_main_process():
@@ -351,7 +351,8 @@ def train_and_evaluate_continuum(model: torch.nn.Module, model_without_ddp: torc
 
         log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
                      **{f'test_{k}': v for k, v in test_stats.items()},
-                     'epoch': epoch, }
+                     'epoch': epoch,
+                     'stat': stat_matrix.tolist()}
 
         if args.output_dir and utils.is_main_process():
             with open(os.path.join(args.output_dir,
