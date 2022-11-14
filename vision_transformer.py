@@ -467,7 +467,7 @@ class VisionTransformer(nn.Module):
                     prompt_mask = None
             else:
                 prompt_mask = None
-            res = self.prompt(x, prompt_mask=prompt_mask, cls_features=cls_features, return_prompt=return_prompt)
+            res = self.prompt(x, prompt_mask=prompt_mask, cls_features=cls_features, return_prompt=return_prompt, task_id=task_id)
             if return_prompt:
                 return res
             self.total_prompt_len = res['total_prompt_len']

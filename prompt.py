@@ -15,6 +15,9 @@ class Prompt(nn.Module):
         self.pool_size = pool_size
         self.top_k = top_k
         self.batchwise_prompt = batchwise_prompt
+        self.freq_matrix = torch.ones(pool_size).to('cuda')
+        self.pre_normalized_freq_matrix = torch.ones(pool_size).to('cuda')
+        self.pre_task_id = 0
 
         if self.prompt_pool:
             prompt_pool_shape = (pool_size, length, embed_dim)
@@ -44,7 +47,7 @@ class Prompt(nn.Module):
         x_inv_norm = torch.rsqrt(torch.maximum(square_sum, torch.tensor(epsilon, device=x.device)))
         return x * x_inv_norm
     
-    def forward(self, x_embed, prompt_mask=None, cls_features=None, return_prompt=False):
+    def forward(self, x_embed, prompt_mask=None, cls_features=None, return_prompt=False, task_id=-1):
         out = dict()
         if self.prompt_pool:
             if self.embedding_key == 'mean':
@@ -65,9 +68,12 @@ class Prompt(nn.Module):
             x_embed_norm = self.l2_normalize(x_embed_mean, dim=1) # B, C
 
             similarity = torch.matmul(x_embed_norm, prompt_norm.t()) # B, Pool_size
-            
+
             if prompt_mask is None:
-                sim, idx = torch.topk(similarity, k=self.top_k, dim=1) # B, top_k
+                # sim, idx = torch.topk(similarity, k=self.top_k, dim=1) # B, top_k
+                if task_id > self.pre_task_id:
+                    self.pre_normalized_freq_matrix = self.freq_matrix / torch.sum(self.freq_matrix)
+                sim, idx = torch.topk(similarity / self.pre_normalized_freq_matrix, k=self.top_k, dim=1) # B, top_k
                 if return_prompt:
                     out['sim'] = sim
                     out['idx'] = idx
@@ -87,7 +93,8 @@ class Prompt(nn.Module):
             else:
                 idx = prompt_mask # B, top_k
 
-            batched_prompt_raw = self.prompt[idx] # B, top_k, length, C
+            self.freq_matrix[idx] += idx.shape[0]
+            batched_prompt_raw = self.prompt[idx]
             batch_size, top_k, length, c = batched_prompt_raw.shape
             batched_prompt = batched_prompt_raw.reshape(batch_size, top_k * length, c) # B, top_k * length, C
 
