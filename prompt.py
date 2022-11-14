@@ -70,10 +70,12 @@ class Prompt(nn.Module):
             similarity = torch.matmul(x_embed_norm, prompt_norm.t()) # B, Pool_size
 
             if prompt_mask is None:
-                # sim, idx = torch.topk(similarity, k=self.top_k, dim=1) # B, top_k
-                if task_id > self.pre_task_id:
-                    self.pre_normalized_freq_matrix = self.freq_matrix / torch.sum(self.freq_matrix)
-                sim, idx = torch.topk(similarity / self.pre_normalized_freq_matrix, k=self.top_k, dim=1) # B, top_k
+                if task_id == -1:
+                    sim, idx = torch.topk(similarity, k=self.top_k, dim=1) # B, top_k
+                else:
+                    if task_id > self.pre_task_id:
+                        self.pre_normalized_freq_matrix = self.freq_matrix / torch.sum(self.freq_matrix)
+                    sim, idx = torch.topk(similarity / self.pre_normalized_freq_matrix, k=self.top_k, dim=1) # B, top_k
                 if return_prompt:
                     out['sim'] = sim
                     out['idx'] = idx

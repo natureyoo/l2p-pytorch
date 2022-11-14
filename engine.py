@@ -168,7 +168,8 @@ def evaluate_continuum(model: torch.nn.Module, original_model: torch.nn.Module, 
             else:
                 cls_features = None
 
-            output = model(input, task_id=task_id, cls_features=cls_features)
+            # output = model(input, task_id=task_id, cls_features=cls_features)
+            output = model(input, task_id=-1, cls_features=cls_features)
             logits = output['logits']
 
             if args.task_inc and class_mask is not None:
