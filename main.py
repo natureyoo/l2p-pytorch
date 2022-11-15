@@ -89,6 +89,7 @@ def get_args_parser():
     parser.add_argument('--seed', default=42, type=int)
     parser.add_argument('--eval', action='store_true', help='Perform evaluation only')
     parser.add_argument('--analysis', action='store_true', help='Perform evaluation only')
+    parser.add_argument('--tsne', action='store_true', help='Perform evaluation only')
     parser.add_argument('--num_workers', default=4, type=int)
     parser.add_argument('--pin-mem', action='store_true',
                         help='Pin CPU memory in DataLoader for more efficient (sometimes) transfer to GPU.')
@@ -196,13 +197,21 @@ def main(args):
             if n.startswith(tuple(args.freeze)):
                 p.requires_grad = False
 
+    checkpoint_path = os.path.join(args.output_dir, 'checkpoint/task2_checkpoint.pth')
+    if os.path.exists(checkpoint_path):
+        print('Loading checkpoint from:', checkpoint_path)
+        checkpoint = torch.load(checkpoint_path)
+        model.load_state_dict(checkpoint['model'])
+    else:
+        print('No checkpoint found at:', checkpoint_path)
+        return
     print(args)
 
     if args.eval:
         acc_matrix = np.zeros((args.num_tasks, args.num_tasks))
 
-        for task_id in range(args.num_tasks):
-        # for task_id in [7]:
+        # for task_id in range(args.num_tasks):
+        for task_id in [0]:
             checkpoint_path = os.path.join(args.output_dir, 'checkpoint/task{}_checkpoint.pth'.format(task_id+1))
             if os.path.exists(checkpoint_path):
                 print('Loading checkpoint from:', checkpoint_path)
@@ -221,7 +230,7 @@ def main(args):
         return
 
     if args.analysis:
-        checkpoint_path = os.path.join(args.output_dir, 'checkpoint/task{}_checkpoint.pth'.format(args.num_tasks))
+        checkpoint_path = os.path.join(args.output_dir, 'checkpoint/task{}_checkpoint.pth'.format(1))
         if os.path.exists(checkpoint_path):
             print('Loading checkpoint from:', checkpoint_path)
             checkpoint = torch.load(checkpoint_path)
@@ -233,6 +242,18 @@ def main(args):
         np.savetxt(os.path.join(args.output_dir, 'prompt_stat_by_class.txt'), prompt_stat['class'], delimiter=',')
         np.savetxt(os.path.join(args.output_dir, 'prompt_stat_by_task.txt'), prompt_stat['task'], delimiter=',')
         print(prompt_stat)
+        return
+
+    if args.tsne:
+        checkpoint_path = os.path.join(args.output_dir, 'checkpoint/task{}_checkpoint.pth'.format(1))
+        if os.path.exists(checkpoint_path):
+            print('Loading checkpoint from:', checkpoint_path)
+            checkpoint = torch.load(checkpoint_path)
+            model.load_state_dict(checkpoint['model'])
+        else:
+            print('No checkpoint found at:', checkpoint_path)
+            return
+        draw_tsne(model, original_model, scenario_train, device, args=args)
         return
 
     model_without_ddp = model

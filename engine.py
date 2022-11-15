@@ -56,16 +56,20 @@ def train_one_epoch(model: torch.nn.Module, original_model: torch.nn.Module,
         
         output = model(input, task_id=task_id, cls_features=cls_features, train=set_training_mode)
         logits = output['logits']
+        if task_id == 0:
+            # here is the trick to mask out classes of non-current tasks
+            if args.train_mask and class_mask is not None:
+                mask = class_mask[task_id]
+                not_mask = np.setdiff1d(np.arange(args.nb_classes), mask)
+                not_mask = torch.tensor(not_mask, dtype=torch.int64).to(device)
+                logits = logits.index_fill(dim=1, index=not_mask, value=float('-inf'))
 
-        # here is the trick to mask out classes of non-current tasks
-        if args.train_mask and class_mask is not None:
-            mask = class_mask[task_id]
-            not_mask = np.setdiff1d(np.arange(args.nb_classes), mask)
-            not_mask = torch.tensor(not_mask, dtype=torch.int64).to(device)
-            logits = logits.index_fill(dim=1, index=not_mask, value=float('-inf'))
+            target = target.type(torch.LongTensor).to(device)
+            loss = criterion(logits, target) # base criterion (CrossEntropyLoss)
+        else:
+            probs = torch.nn.Softmax(dim=1)(logits)
+            loss = torch.mean(torch.sum(-probs * torch.log(probs), dim=1))
 
-        target = target.type(torch.LongTensor).to(device)
-        loss = criterion(logits, target) # base criterion (CrossEntropyLoss)
         if args.pull_constraint and 'reduce_sim' in output:
             loss = loss - args.pull_constraint_coeff * output['reduce_sim']
 
@@ -169,7 +173,8 @@ def evaluate_continuum(model: torch.nn.Module, original_model: torch.nn.Module, 
                 cls_features = None
 
             # output = model(input, task_id=task_id, cls_features=cls_features)
-            output = model(input, task_id=-1, cls_features=cls_features)
+            prompt_id = 1
+            output = model(input, task_id=prompt_id, cls_features=cls_features)
             logits = output['logits']
 
             if args.task_inc and class_mask is not None:
@@ -271,6 +276,8 @@ def train_and_evaluate(model: torch.nn.Module, model_without_ddp: torch.nn.Modul
     acc_matrix = np.zeros((args.num_tasks, args.num_tasks))
 
     for task_id in range(args.num_tasks):
+        if task_id < 2:
+            continue
         # Create new optimizer for each task to clear optimizer status
         if task_id > 0 and args.reinit_optimizer:
             optimizer = create_optimizer(args, model)
@@ -396,3 +403,44 @@ def analyze(model: torch.nn.Module, original_model: torch.nn.Module, scenario,
                     p_stat['class'][target[i]][output['idx'][i].cpu()] += 1
             print(p_stat)
     return p_stat
+
+@torch.no_grad()
+def draw_tsne(model, original_model, scenario, device, args=None):
+    from sklearn.manifold import TSNE
+    import matplotlib.pyplot as plt
+    metric_logger = utils.MetricLogger(delimiter="  ")
+    model.eval()
+    original_model.eval()
+    with torch.no_grad():
+        for task_id, dataset in enumerate(scenario):
+            feature_matrix = np.zeros((len(dataset), 768))
+            target_arr = np.zeros(len(dataset))
+            cur_idx = 0
+            data_loader = get_train_loaders(dataset, args)
+            header = 'Test: [Task {}]'.format(task_id + 1)
+            for input, target, _ in metric_logger.log_every(data_loader, args.print_freq, header):
+                input = input.to(device, non_blocking=True)
+                target = target
+                if original_model is not None:
+                    output = original_model(input)
+                    cls_features = output['pre_logits']
+                else:
+                    cls_features = None
+
+                output = model(input, task_id=task_id, cls_features=cls_features)
+                feature_matrix[cur_idx:cur_idx+input.shape[0]] = output['pre_logits'].cpu()
+                target_arr[cur_idx:cur_idx+input.shape[0]] = target
+                cur_idx += input.shape[0]
+            selected_idx = np.random.choice(len(dataset), len(dataset)//10, replace=False)
+            tsne_np = TSNE(n_components=2).fit_transform(feature_matrix[selected_idx])
+            selected_target = target_arr[selected_idx]
+            plt.figure()
+            for cls in range(345):
+                color = np.array([list(np.random.choice(range(256), size=3))] * (selected_target==cls).sum())
+                plt.scatter(tsne_np[selected_target==cls][:,0], tsne_np[selected_target==cls][:,1], s=2, c=color/255.0, label='{}'.format(cls+1))
+
+            plt.xlabel('component 0')
+            plt.ylabel('component 1')
+            # plt.legend()
+            plt.savefig(os.path.join(args.output_dir, 'tsne_task{}.jpg'.format(task_id+1)))
+    return
