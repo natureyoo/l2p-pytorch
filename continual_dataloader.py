@@ -18,7 +18,7 @@ import torch
 from torch.utils.data.dataset import Subset
 from torchvision import datasets, transforms
 from torchvision.transforms.transforms import Lambda
-from continuum.datasets import Core50, DomainNet
+from continuum.datasets import Core50, DomainNet, OfficeHome
 from continuum import InstanceIncremental
 import warnings
 from timm.data import create_transform
@@ -31,7 +31,6 @@ try:
     interpolation = Fv.InterpolationMode.BICUBIC
 except:
     interpolation = 3
-
 
 
 class ContinualDataLoader:
@@ -220,6 +219,8 @@ def build_dataset(is_train, args):
         dataset = Core50(args.data_path, scenario='domains', classification='object', train=is_train)
     elif args.dataset.lower() == 'domainnet':
         dataset = DomainNet(args.data_path, train=is_train)
+    elif args.dataset.lower() == 'officehome':
+        dataset = OfficeHome(args.data_path, train=is_train, download=False)
     else:
         raise ValueError(f'Unknown dataset {args.data_set}.')
 
