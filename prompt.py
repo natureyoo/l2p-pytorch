@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 
 class Prompt(nn.Module):
-    def __init__(self, length=5, embed_dim=768, embedding_key='mean', prompt_init='uniform', prompt_pool=False, 
+    def __init__(self, length=5, embed_dim=768, embedding_key='mean', prompt_init='uniform', prompt_pool=False,
                  prompt_key=False, pool_size=None, top_k=None, batchwise_prompt=False, prompt_key_init='uniform',):
         super().__init__()
 
@@ -15,8 +15,8 @@ class Prompt(nn.Module):
         self.pool_size = pool_size
         self.top_k = top_k
         self.batchwise_prompt = batchwise_prompt
-        self.freq_matrix = torch.ones(pool_size).to('cuda')
-        self.pre_normalized_freq_matrix = torch.ones(pool_size).to('cuda')
+        self.freq_matrix = torch.ones(pool_size)
+        self.pre_normalized_freq_matrix = torch.ones(pool_size)
         self.pre_task_id = 0
 
         if self.prompt_pool:
@@ -26,7 +26,7 @@ class Prompt(nn.Module):
             elif prompt_init == 'uniform':
                 self.prompt = nn.Parameter(torch.randn(prompt_pool_shape))
                 nn.init.uniform_(self.prompt, -1, 1)
-        
+
         # if using learnable prompt keys
         if prompt_key:
             key_shape = (pool_size, embed_dim)
@@ -40,13 +40,13 @@ class Prompt(nn.Module):
             # only compatible with prompt, not prefix
             prompt_mean = torch.mean(self.prompt, dim=1)
             self.prompt_key = prompt_mean
-    
+
     def l2_normalize(self, x, dim=None, epsilon=1e-12):
         """Normalizes a given vector or matrix."""
         square_sum = torch.sum(x ** 2, dim=dim, keepdim=True)
         x_inv_norm = torch.rsqrt(torch.maximum(square_sum, torch.tensor(epsilon, device=x.device)))
         return x * x_inv_norm
-    
+
     def forward(self, x_embed, prompt_mask=None, cls_features=None, return_prompt=False, task_id=-1):
         out = dict()
         if self.prompt_pool:
@@ -75,7 +75,7 @@ class Prompt(nn.Module):
                 else:
                     if task_id > self.pre_task_id:
                         self.pre_normalized_freq_matrix = self.freq_matrix / torch.sum(self.freq_matrix)
-                    sim, idx = torch.topk(similarity / self.pre_normalized_freq_matrix, k=self.top_k, dim=1) # B, top_k
+                    sim, idx = torch.topk(similarity / self.pre_normalized_freq_matrix.to(similarity.device), k=self.top_k, dim=1) # B, top_k
                 if return_prompt:
                     out['sim'] = sim
                     out['idx'] = idx
@@ -122,7 +122,7 @@ class Prompt(nn.Module):
                 self.prompt = nn.Parameter(torch.randn(self.length, self.embed_dim))
                 nn.init.uniform_(self.prompt)
             batched_prompt = self.prompt.unsqueeze(0).expand(x_embed.shape[0], -1, -1)
-        
+
         # The input with the prompt concatenated to the front. [B, prompt+token, C]
         out['total_prompt_len'] = batched_prompt.shape[1]
         out['prompted_embedding'] = torch.cat([batched_prompt, x_embed], dim=1)

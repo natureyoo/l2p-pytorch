@@ -30,7 +30,7 @@ import utils
 def train_one_epoch(model: torch.nn.Module, original_model: torch.nn.Module, 
                     criterion, data_loader: Iterable, optimizer: torch.optim.Optimizer,
                     device: torch.device, epoch: int, max_norm: float = 0,
-                    set_training_mode=True, task_id=-1, class_mask=None, args = None,):
+                    set_training_mode=True, task_id=-1, class_mask=None, args=None, source_cov=None):
 
     model.train(set_training_mode)
     original_model.eval()
@@ -66,9 +66,18 @@ def train_one_epoch(model: torch.nn.Module, original_model: torch.nn.Module,
 
             target = target.type(torch.LongTensor).to(device)
             loss = criterion(logits, target) # base criterion (CrossEntropyLoss)
+
         else:
-            probs = torch.nn.Softmax(dim=1)(logits)
-            loss = torch.mean(torch.sum(-probs * torch.log(probs), dim=1))
+            # entropy minimization
+            # probs = torch.nn.Softmax(dim=1)(logits)
+            # loss = torch.mean(torch.sum(-probs * torch.log(probs + 1e-7), dim=1))
+
+            # coral aligning
+            pre_logits = output['pre_logits']
+            cur_cov = utils.compute_covariance(pre_logits)
+            loss_coral = torch.sum(torch.mul((source_cov - cur_cov), (source_cov - cur_cov)))
+            # loss += loss_coral / (4 * source_cov.shape[1] * source_cov.shape[1])
+            loss = loss_coral / (4 * source_cov.shape[1] * source_cov.shape[1])
 
         if args.pull_constraint and 'reduce_sim' in output:
             loss = loss - args.pull_constraint_coeff * output['reduce_sim']
@@ -93,8 +102,39 @@ def train_one_epoch(model: torch.nn.Module, original_model: torch.nn.Module,
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
     print("Averaged stats:", metric_logger)
+
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
+@torch.no_grad()
+def calculate_cov(model: torch.nn.Module, original_model: torch.nn.Module, data_loader: Iterable,
+                    device: torch.device, set_training_mode=True, task_id=-1, args=None):
+    model.eval()
+    original_model.eval()
+
+    metric_logger = utils.MetricLogger(delimiter="  ")
+    metric_logger.add_meter('Lr', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
+    metric_logger.add_meter('Loss', utils.SmoothedValue(window_size=1, fmt='{value:.4f}'))
+    header = f'Calculate Covariance'
+
+    source_cov = torch.zeros((768, 768)).to(args.device)
+    for input, target, _  in data_loader:
+        input = input.to(device, non_blocking=True)
+        target = target.to(device, non_blocking=True)
+
+        with torch.no_grad():
+            if original_model is not None:
+                output = original_model(input)
+                cls_features = output['pre_logits']
+            else:
+                cls_features = None
+
+        output = model(input, task_id=task_id, cls_features=cls_features, train=set_training_mode)
+
+        pre_logits = output['pre_logits']
+        source_cov += utils.compute_covariance(pre_logits)
+    print('************ Source Covariance Matrix **************')
+    print(source_cov)
+    return source_cov / len(data_loader)
 
 @torch.no_grad()
 def evaluate(model: torch.nn.Module, original_model: torch.nn.Module, data_loader, 
@@ -236,9 +276,12 @@ def evaluate_till_now(model: torch.nn.Module, original_model: torch.nn.Module, d
 def evaluate_till_now_continuum(model: torch.nn.Module, original_model: torch.nn.Module, scenario_val,
                       device, task_id=-1, class_mask=None, acc_matrix=None, args=None, ):
     # stat_matrix = np.zeros((3, args.num_tasks))  # 3 for Acc@1, Acc@5, Loss
-    stat_matrix = np.zeros((3, len(scenario_val)))  # 3 for Acc@1, Acc@5, Loss
+    # stat_matrix = np.zeros((3, len(scenario_val)))  # 3 for Acc@1, Acc@5, Loss
+    stat_matrix = np.zeros((3, task_id+1))  # 3 for Acc@1, Acc@5, Loss
 
     for i, dataset_val in enumerate(scenario_val):
+        if i > task_id:
+            break
         loader_val = get_val_loaders(dataset_val, args)
         test_stats = evaluate_continuum(model=model, original_model=original_model, data_loader=loader_val,
                               device=device, task_id=i, class_mask=class_mask, args=args)
@@ -323,18 +366,26 @@ def train_and_evaluate_continuum(model: torch.nn.Module, model_without_ddp: torc
                        class_mask=None, args=None, ):
     # create matrix to save end-of-task accuracies
     acc_matrix = np.zeros((args.num_tasks, args.num_tasks))
-
+    source_cov = None
     for task_id, dataset_train in enumerate(scenario_train):
     # for task_id in [7]:
     #     Create new optimizer for each task to clear optimizer status
         if task_id > 0 and args.reinit_optimizer:
             optimizer = create_optimizer(args, model)
         loader_train = get_train_loaders(dataset_train, args)
+
+        if task_id == 0:
+            source_cov = calculate_cov(model=model, original_model=original_model, data_loader=loader_train,
+                                        device=device, set_training_mode=True, task_id=task_id, args=args)
+            continue
+        # if task_id <=1:
+        #     print('Skip {}-th task!'.format(task_id + 1))
+        #     continue
         for epoch in range(args.epochs):
             train_stats = train_one_epoch(model=model, original_model=original_model, criterion=criterion,
                                           data_loader=loader_train, optimizer=optimizer,
                                           device=device, epoch=epoch, max_norm=args.clip_grad,
-                                          set_training_mode=True, task_id=task_id, class_mask=class_mask, args=args, )
+                                          set_training_mode=True, task_id=task_id, class_mask=class_mask, args=args, source_cov=source_cov)
 
             if lr_scheduler:
                 lr_scheduler.step(epoch)

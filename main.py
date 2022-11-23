@@ -126,7 +126,7 @@ def get_args_parser():
     # ViT parameters
     parser.add_argument('--global_pool', default='token', choices=['token', 'avg'], type=str, help='type of global pooling for final sequence')
     parser.add_argument('--head_type', default='prompt', choices=['token', 'gap', 'prompt', 'token+prompt'], type=str, help='input type of classification head')
-    parser.add_argument('--freeze', default=['blocks', 'patch_embed', 'cls_token', 'norm', 'pos_embed'], nargs='*', type=list, help='freeze part in backbone model')
+    parser.add_argument('--freeze', default=['blocks', 'patch_embed', 'cls_token', 'norm', 'pos_embed','head'], nargs='*', type=list, help='freeze part in backbone model')
 
     # Misc parameters
     parser.add_argument('--print_freq', type=int, default=10, help = 'The frequency of printing')
@@ -197,7 +197,8 @@ def main(args):
             if n.startswith(tuple(args.freeze)):
                 p.requires_grad = False
 
-    checkpoint_path = os.path.join(args.output_dir, 'checkpoint/task2_checkpoint.pth')
+    # checkpoint_path = os.path.join('output/output_domainnet_seperate_prompt/checkpoint', 'task1_checkpoint.pth')
+    checkpoint_path = os.path.join('output/output_domainnet_uda_ent_min/checkpoint', 'task1_checkpoint.pth')
     if os.path.exists(checkpoint_path):
         print('Loading checkpoint from:', checkpoint_path)
         checkpoint = torch.load(checkpoint_path)
