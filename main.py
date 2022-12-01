@@ -14,6 +14,7 @@ import numpy as np
 import time
 import torch
 import torch.backends.cudnn as cudnn
+from torch.utils.tensorboard import SummaryWriter
 
 from pathlib import Path
 
@@ -107,6 +108,7 @@ def get_args_parser():
     parser.add_argument('--classes_per_task', default=10, type=int, help='number of classes per task')
     parser.add_argument('--train_mask', default=True, type=bool, help='if using the class mask at training')
     parser.add_argument('--task_inc', default=False, type=bool, help='if doing task incremental')
+    parser.add_argument('--orthogonal_head', default=False, type=bool, help='orthogonal parameter update for head')
 
     # Prompt parameters
     parser.add_argument('--prompt_pool', default=True, type=bool,)
@@ -126,7 +128,7 @@ def get_args_parser():
     # ViT parameters
     parser.add_argument('--global_pool', default='token', choices=['token', 'avg'], type=str, help='type of global pooling for final sequence')
     parser.add_argument('--head_type', default='prompt', choices=['token', 'gap', 'prompt', 'token+prompt'], type=str, help='input type of classification head')
-    parser.add_argument('--freeze', default=['blocks', 'patch_embed', 'cls_token', 'norm', 'pos_embed','head'], nargs='*', type=list, help='freeze part in backbone model')
+    parser.add_argument('--freeze', default=['blocks', 'patch_embed', 'cls_token', 'norm', 'pos_embed'], nargs='*', type=list, help='freeze part in backbone model')
 
     # Misc parameters
     parser.add_argument('--print_freq', type=int, default=10, help = 'The frequency of printing')
@@ -198,15 +200,17 @@ def main(args):
                 p.requires_grad = False
 
     # checkpoint_path = os.path.join('output/output_domainnet_seperate_prompt/checkpoint', 'task1_checkpoint.pth')
-    checkpoint_path = os.path.join('output/output_domainnet_uda_ent_min/checkpoint', 'task1_checkpoint.pth')
-    if os.path.exists(checkpoint_path):
-        print('Loading checkpoint from:', checkpoint_path)
-        checkpoint = torch.load(checkpoint_path)
-        model.load_state_dict(checkpoint['model'])
-    else:
-        print('No checkpoint found at:', checkpoint_path)
-        return
+    # checkpoint_path = os.path.join('output/output_domainnet_uda_ent_min/checkpoint', 'task1_checkpoint.pth')
+    # if os.path.exists(checkpoint_path):
+    #     print('Loading checkpoint from:', checkpoint_path)
+    #     checkpoint = torch.load(checkpoint_path)
+    #     model.load_state_dict(checkpoint['model'])
+    # else:
+    #     print('No checkpoint found at:', checkpoint_path)
+    #     return
     print(args)
+
+    writer = SummaryWriter('./runs/{}'.format(args.output_dir.split('/')[-1]))
 
     if args.eval:
         acc_matrix = np.zeros((args.num_tasks, args.num_tasks))
@@ -246,7 +250,7 @@ def main(args):
         return
 
     if args.tsne:
-        checkpoint_path = os.path.join(args.output_dir, 'checkpoint/task{}_checkpoint.pth'.format(1))
+        checkpoint_path = os.path.join(args.output_dir, 'checkpoint/task{}_checkpoint2.pth'.format(1))
         if os.path.exists(checkpoint_path):
             print('Loading checkpoint from:', checkpoint_path)
             checkpoint = torch.load(checkpoint_path)
@@ -269,7 +273,7 @@ def main(args):
         global_batch_size = args.batch_size * args.world_size
     else:
         global_batch_size = args.batch_size
-    args.lr = args.lr * global_batch_size / 256.0
+    # args.lr = args.lr * global_batch_size / 256.0
 
     optimizer = create_optimizer(args, model_without_ddp)
 
@@ -291,7 +295,7 @@ def main(args):
     else:
         train_and_evaluate_continuum(model, model_without_ddp, original_model,
                         criterion, scenario_train, scenario_val, optimizer, lr_scheduler,
-                        device, args=args)
+                        device, args=args, writer=writer)
 
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
