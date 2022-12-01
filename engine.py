@@ -122,6 +122,83 @@ def train_one_epoch(model: torch.nn.Module, original_model: torch.nn.Module,
 
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}, cur_iter
 
+
+def train_one_epoch_uda(model: torch.nn.Module, original_model: torch.nn.Module,
+                    criterion, data_loader_s, data_loader_t, optimizer: torch.optim.Optimizer,
+                    device: torch.device, epoch: int, max_norm: float = 0,
+                    set_training_mode=True, task_id=-1, class_mask=None, args=None):
+    model.train(set_training_mode)
+    original_model.eval()
+
+    if args.distributed and utils.get_world_size() > 1:
+        data_loader_s.sampler.set_epoch(epoch)
+
+    metric_logger = utils.MetricLogger(delimiter="  ")
+    metric_logger.add_meter('Lr', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
+    metric_logger.add_meter('Loss', utils.SmoothedValue(window_size=1, fmt='{value:.4f}'))
+    header = f'Train: Epoch[{epoch + 1:{int(math.log10(args.epochs)) + 1}}/{args.epochs}]'
+
+    for (input_s, target_s, _), (input_t, target_t, _) in metric_logger.log_every(zip(data_loader_s, data_loader_t), args.print_freq, header):
+        input_s = input_s.to(device, non_blocking=True)
+        target_s = target_s.to(device, non_blocking=True)
+        input_t = input_t.to(device, non_blocking=True)
+        target_t = target_t.to(device, non_blocking=True)
+
+        with torch.no_grad():
+            if original_model is not None:
+                output_s = original_model(input_s)
+                cls_features_s = output_s['pre_logits']
+
+                output_t = original_model(input_t)
+                cls_features_t = output_t['pre_logits']
+            else:
+                cls_features_t = None
+
+        output_s = model(input_s, task_id=0, cls_features=cls_features_s, train=set_training_mode)
+        logits_s = output_s['logits']
+        disc_logits_s = output_s['discriminator']['logits']
+        disc_target_s = torch.full(disc_logits_s.shape, 0, dtype=torch.float, device=args.device)
+
+        output_t = model(input_t, task_id=1, cls_features=cls_features_t, train=set_training_mode)
+        logits_t = output_t['logits']
+        disc_logits_t = output_t['discriminator']['logits']
+        disc_target_t = torch.full(disc_logits_t.shape, 1, dtype=torch.float, device=args.device)
+
+        # classification loss in source domain
+        target_s = target_s.type(torch.LongTensor).to(device)
+        loss = criterion(logits_s, target_s)  # base criterion (CrossEntropyLoss)
+
+        # adversarial aligning loss
+        loss_adv = torch.mean((disc_logits_s - disc_target_s) ** 2) + torch.mean((disc_logits_t - disc_target_t) ** 2)
+        loss += loss_adv
+
+        if args.pull_constraint and 'reduce_sim' in output_s:
+            loss = loss - args.pull_constraint_coeff * output_s['reduce_sim']
+
+        acc1, acc5 = accuracy(logits_t, target_t, topk=(1, 5))
+
+        if not math.isfinite(loss.item()):
+            print("Loss is {}, stopping training".format(loss.item()))
+            sys.exit(1)
+
+        optimizer.zero_grad()
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
+        optimizer.step()
+
+        torch.cuda.synchronize()
+        metric_logger.update(Loss=loss.item())
+        metric_logger.update(Lr=optimizer.param_groups[0]["lr"])
+        metric_logger.meters['Acc@1'].update(acc1.item(), n=input.shape[0])
+        metric_logger.meters['Acc@5'].update(acc5.item(), n=input.shape[0])
+
+    # gather the stats from all processes
+    metric_logger.synchronize_between_processes()
+    print("Averaged stats:", metric_logger)
+
+    return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
+
+
 @torch.no_grad()
 def calculate_cov(model: torch.nn.Module, original_model: torch.nn.Module, data_loader: Iterable,
                     device: torch.device, task_id=-1, args=None):
@@ -464,6 +541,60 @@ def train_and_evaluate_continuum(model: torch.nn.Module, model_without_ddp: torc
             # v[:, :180] = 0
             # print(torch.mm(feature_mtx, v))
             projection.append(v[:, 500:])
+
+
+def train_and_evaluate_uda(model: torch.nn.Module, model_without_ddp: torch.nn.Module, original_model: torch.nn.Module,
+                       criterion, scenario_train, scenario_val, optimizer: torch.optim.Optimizer, lr_scheduler,
+                       device: torch.device,
+                       class_mask=None, args=None, ):
+    # create matrix to save end-of-task accuracies
+    acc_matrix = np.zeros((args.num_tasks, args.num_tasks))
+    source_cov = None
+    if task_id > 0 and args.reinit_optimizer:
+        optimizer = create_optimizer(args, model)
+    loader_train = get_train_loaders(dataset_train, args)
+
+    # if task_id <=1:
+    #     print('Skip {}-th task!'.format(task_id + 1))
+    #     continue
+    for epoch in range(args.epochs):
+        train_stats = train_one_epoch_uda(model=model, original_model=original_model, criterion=criterion,
+        train_stats = train_one_epoch_uda(model=model, original_model=original_model, criterion=criterion,
+                                      data_loader=loader_train, optimizer=optimizer,
+                                      device=device, epoch=epoch, max_norm=args.clip_grad,
+                                      set_training_mode=True, class_mask=class_mask, args=args, source_cov=source_cov)
+
+        if lr_scheduler:
+            lr_scheduler.step(epoch)
+
+    test_stats, stat_matrix = evaluate_till_now_continuum(model=model, original_model=original_model, scenario_val=scenario_val,
+                                             device=device, task_id=task_id, class_mask=class_mask,
+                                             acc_matrix=acc_matrix, args=args)
+    if args.output_dir and utils.is_main_process():
+        Path(os.path.join(args.output_dir, 'checkpoint')).mkdir(parents=True, exist_ok=True)
+
+        checkpoint_path = os.path.join(args.output_dir, 'checkpoint/task{}_checkpoint.pth'.format(task_id + 1))
+        state_dict = {
+            'model': model_without_ddp.state_dict(),
+            'optimizer': optimizer.state_dict(),
+            'epoch': epoch,
+            'args': args,
+        }
+        if args.sched is not None and args.sched != 'constant':
+            state_dict['lr_scheduler'] = lr_scheduler.state_dict()
+
+        utils.save_on_master(state_dict, checkpoint_path)
+
+    log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
+                 **{f'test_{k}': v for k, v in test_stats.items()},
+                 'epoch': epoch,
+                 'stat': stat_matrix.tolist()}
+
+    if args.output_dir and utils.is_main_process():
+        with open(os.path.join(args.output_dir,
+                               '{}_stats.txt'.format(datetime.datetime.now().strftime('log_%Y_%m_%d_%H_%M'))),
+                  'a') as f:
+            f.write(json.dumps(log_stats) + '\n')
 
 
 @torch.no_grad()

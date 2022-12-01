@@ -409,6 +409,10 @@ class VisionTransformer(nn.Module):
         self.fc_norm = norm_layer(embed_dim) if use_fc_norm else nn.Identity()
         self.head = nn.Linear(self.embed_dim, num_classes) if num_classes > 0 else nn.Identity()
 
+        # Domain Discriminator
+        self.fc_norm_disc = norm_layer(embed_dim) if use_fc_norm else nn.Identity()
+        self.head_disc = nn.Linear(self.embed_dim, 1)
+
         if weight_init != 'skip':
             self.init_weights(weight_init)
 
@@ -512,12 +516,36 @@ class VisionTransformer(nn.Module):
         
         return res
 
+    def forward_discriminator(self, res, pre_logits: bool = False):
+        x = res['x']
+        if self.class_token and self.head_type == 'token':
+            x = x[:, 0]
+        elif self.head_type == 'gap' and self.global_pool == 'avg':
+            x = x.mean(dim=1)
+        elif self.head_type == 'prompt' and self.prompt_pool:
+            x = x[:, 1:(1 + self.total_prompt_len)] if self.class_token else x[:, 0:self.total_prompt_len]
+            x = x.mean(dim=1)
+        elif self.head_type == 'token+prompt' and self.prompt_pool and self.class_token:
+            x = x[:, 0:self.total_prompt_len + 1]
+            x = x.mean(dim=1)
+        else:
+            raise ValueError(f'Invalid classifier={self.classifier}')
+
+        res['pre_logits'] = x
+
+        x = self.fc_norm_disc(x)
+
+        res['logits'] = self.head_disc(x)
+
+        return res
+
     def forward(self, x, task_id=-1, cls_features=None, train=False, return_prompt=False):
         if return_prompt:
             res = self.forward_features(x, task_id=task_id, cls_features=cls_features, train=train, return_prompt=True)
             return res
         res = self.forward_features(x, task_id=task_id, cls_features=cls_features, train=train)
         res = self.forward_head(res)
+        res['discriminator'] = self.forward_discriminator(res)
         return res
 
 

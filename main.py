@@ -293,7 +293,7 @@ def main(args):
                         criterion, data_loader, optimizer, lr_scheduler,
                         device, class_mask, args)
     else:
-        train_and_evaluate_continuum(model, model_without_ddp, original_model,
+        train_and_evaluate_uda(model, model_without_ddp, original_model,
                         criterion, scenario_train, scenario_val, optimizer, lr_scheduler,
                         device, args=args, writer=writer)
 
